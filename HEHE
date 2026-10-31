@@ -1,0 +1,817 @@
+-- PexorHub | blue hitbox ring around you
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
+local CoreGui = game:GetService("CoreGui")
+
+local LP = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+local PINK = Color3.fromRGB(255, 145, 205)
+local BLUE = Color3.fromRGB(40, 150, 255)
+local TEXT = Color3.fromRGB(230, 230, 230)
+local DIM = Color3.fromRGB(150, 150, 150)
+local ROOT, FOLDER = "PexorHub", "PexorHub/configs"
+
+local S = {
+	AimEnabled = false, TeamCheck = false, HealthCheck = false,
+	HitPart = "Head", AimType = "Memory", Distance = 465, LockPower = 55,
+	AimPred = false, PredX = 1, PredY = 1,
+	SilentPred = true, SilentPredX = 4.68, SilentPredY = 6.65,
+	AimFovOn = false, AimFovFill = false, AimFovSize = 100, AimFovStyle = "Smooth",
+	Hitbox = false, HitboxSize = 7, HitboxFov = 24,
+	SilentOn = true, SilentHealth = false, SilentKnock = false,
+	SilentPart = "Body", SilentDist = 2000,
+	SilentFovOn = true, SilentFovFill = false, SilentFovSize = 128, SilentFovStyle = "Smooth",
+	SmoothOn = false, SmoothX = 1, SmoothY = 1, Sensitivity = 1.3,
+	TpMethod = false, TpType = "Camera",
+	BoxESP = false, NameESP = true, HealthESP = false, TracerESP = false, ChamESP = false,
+	Speed = false, Walk = 16, Fly = false, Noclip = false, InfJump = false,
+}
+local Whitelist, Logs, painters, savedTorso = {}, {}, {}, {}
+local outLabel, cfgLabel, silentPos, activeSlider, menuOpen = nil, nil, nil, nil, true
+local params = RaycastParams.new()
+params.FilterType = Enum.RaycastFilterType.Exclude
+
+local ringFolder = Instance.new("Folder")
+ringFolder.Name = "PexorHubRing"
+ringFolder.Parent = workspace
+local ring = {}
+local RING_N = 32
+for i = 1, RING_N do
+	local p = Instance.new("Part")
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.CastShadow = false
+	p.Material = Enum.Material.Neon
+	p.Color = BLUE
+	p.Transparency = 1
+	p.Size = Vector3.new(0.28, 0.12, 1)
+	p.Parent = ringFolder
+	ring[i] = p
+end
+
+local function placeRing()
+	local root = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+	if not S.Hitbox or not root then
+		for _, p in ipairs(ring) do p.Transparency = 1 end
+		return
+	end
+	local r = S.HitboxFov
+	local center = root.Position - Vector3.new(0, 2.6, 0)
+	local seg = math.max((math.pi * 2 * r) / RING_N, 0.4)
+	for i, p in ipairs(ring) do
+		local a = (i / RING_N) * math.pi * 2
+		local pos = center + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+		p.Size = Vector3.new(0.28, 0.12, seg * 1.08)
+		p.CFrame = CFrame.lookAt(pos, pos + Vector3.new(-math.sin(a), 0, math.cos(a)))
+		p.Transparency = 0.05
+	end
+end
+
+local function tw(o, t, props)
+	TweenService:Create(o, TweenInfo.new(t, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), props):Play()
+end
+local function log(msg)
+	table.insert(Logs, 1, os.date("%H:%M:%S") .. "  " .. msg)
+	if #Logs > 24 then table.remove(Logs) end
+	if outLabel then outLabel.Text = table.concat(Logs, "\n") end
+end
+local function ensureFolder()
+	if isfolder and not isfolder(ROOT) then makefolder(ROOT) end
+	if isfolder and not isfolder(FOLDER) then makefolder(FOLDER) end
+end
+local function configList()
+	ensureFolder()
+	local names = {}
+	if not listfiles then return names end
+	local ok, files = pcall(listfiles, FOLDER)
+	if not ok or type(files) ~= "table" then return names end
+	for _, f in ipairs(files) do
+		if not string.find(string.lower(f), "pexorhub", 1, true) then continue end
+		local name = f:match("([^/\\]+)%.json$")
+		if name and not name:find("%.%.") then names[#names + 1] = name end
+	end
+	table.sort(names)
+	return names
+end
+local function saveConfig(name)
+	ensureFolder()
+	name = (name or "main"):gsub("[^%w_%-]", "")
+	if name == "" then name = "main" end
+	writefile(FOLDER .. "/" .. name .. ".json", HttpService:JSONEncode({settings = S, whitelist = Whitelist}))
+	log("saved " .. name)
+	return name
+end
+local function loadConfig(name)
+	local data = HttpService:JSONDecode(readfile(FOLDER .. "/" .. name .. ".json"))
+	if type(data.settings) == "table" then
+		for k, v in pairs(data.settings) do if S[k] ~= nil then S[k] = v end end
+	end
+	Whitelist = {}
+	if type(data.whitelist) == "table" then
+		for k, v in pairs(data.whitelist) do Whitelist[k] = v end
+	end
+	for _, fn in pairs(painters) do fn() end
+	log("loaded " .. name)
+end
+local function openFolder()
+	ensureFolder()
+	local path
+	local ok, files = pcall(listfiles, FOLDER)
+	if ok and type(files) == "table" then
+		for _, f in ipairs(files) do
+			if f:find("^%a:") then path = f:match("^(.*[/\\])") break end
+		end
+	end
+	local tries = {}
+	if path then tries[#tries + 1] = path:gsub("/", "\\") end
+	pcall(function()
+		local base = os.getenv("LOCALAPPDATA")
+		if base then tries[#tries + 1] = base .. "\\Xeno\\workspace\\PexorHub\\configs" end
+	end)
+	for _, pth in ipairs(tries) do
+		local ran = false
+		pcall(function() os.execute('start "" explorer "' .. pth .. '"') ran = true end)
+		if not ran then pcall(function() io.popen('explorer "' .. pth .. '"') ran = true end) end
+		if ran then log("opened PexorHub/configs") return end
+	end
+	if setclipboard then setclipboard(FOLDER) end
+	log("folder is PexorHub/configs")
+end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "PexorHub"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = CoreGui
+local win = Instance.new("CanvasGroup")
+win.Size = UDim2.fromOffset(460, 860)
+win.Position = UDim2.new(0.5, -230, 0.56, -430)
+win.BackgroundColor3 = Color3.fromRGB(18, 18, 20)
+win.BorderSizePixel = 0
+win.GroupTransparency = 1
+win.Parent = gui
+Instance.new("UICorner", win).CornerRadius = UDim.new(0, 8)
+Instance.new("UIStroke", win).Color = Color3.fromRGB(46, 46, 50)
+tw(win, 0.45, {GroupTransparency = 0, Position = UDim2.new(0.5, -230, 0.5, -430)})
+local title = Instance.new("TextLabel")
+title.BackgroundTransparency = 1
+title.Size = UDim2.new(1, -16, 0, 24)
+title.Position = UDim2.fromOffset(12, 6)
+title.Font = Enum.Font.GothamMedium
+title.TextSize = 14
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.TextColor3 = Color3.fromRGB(210, 210, 214)
+title.Text = "PexorHub"
+title.Parent = win
+local tabBar = Instance.new("Frame")
+tabBar.BackgroundTransparency = 1
+tabBar.Position = UDim2.fromOffset(10, 32)
+tabBar.Size = UDim2.new(1, -20, 0, 22)
+tabBar.Parent = win
+local tl = Instance.new("UIListLayout", tabBar)
+tl.FillDirection = Enum.FillDirection.Horizontal
+tl.Padding = UDim.new(0, 8)
+local pages = Instance.new("Frame")
+pages.BackgroundTransparency = 1
+pages.Position = UDim2.fromOffset(12, 58)
+pages.Size = UDim2.new(1, -20, 1, -70)
+pages.Parent = win
+local pageFrames, tabBtns = {}, {}
+local function makePage(name)
+	local f = Instance.new("ScrollingFrame")
+	f.Size = UDim2.fromScale(1, 1)
+	f.BackgroundTransparency = 1
+	f.BorderSizePixel = 0
+	f.ScrollBarThickness = 2
+	f.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	f.CanvasSize = UDim2.new()
+	f.Visible = false
+	f.Parent = pages
+	Instance.new("UIPadding", f).PaddingBottom = UDim.new(0, 12)
+	Instance.new("UIListLayout", f).Padding = UDim.new(0, 5)
+	pageFrames[name] = f
+	local b = Instance.new("TextButton")
+	b.AutomaticSize = Enum.AutomaticSize.X
+	b.Size = UDim2.fromOffset(0, 18)
+	b.BackgroundTransparency = 1
+	b.Font = Enum.Font.Gotham
+	b.TextSize = 12
+	b.Text = name
+	b.TextColor3 = DIM
+	b.Parent = tabBar
+	tabBtns[name] = b
+	b.MouseButton1Click:Connect(function()
+		for n, p in pairs(pageFrames) do p.Visible = n == name end
+		for n, tb in pairs(tabBtns) do tw(tb, 0.16, {TextColor3 = n == name and TEXT or DIM}) end
+	end)
+	return f
+end
+local function header(parent, text)
+	local t = Instance.new("TextLabel")
+	t.BackgroundTransparency = 1
+	t.Size = UDim2.new(1, 0, 0, 18)
+	t.Font = Enum.Font.Gotham
+	t.TextSize = 12
+	t.TextXAlignment = Enum.TextXAlignment.Left
+	t.TextColor3 = DIM
+	t.Text = text
+	t.Parent = parent
+end
+local function toggle(parent, text, key)
+	local f = Instance.new("TextButton")
+	f.Size = UDim2.new(1, -6, 0, 22)
+	f.BackgroundTransparency = 1
+	f.Text = ""
+	f.AutoButtonColor = false
+	f.Parent = parent
+	local c = Instance.new("Frame")
+	c.Size = UDim2.fromOffset(14, 14)
+	c.Position = UDim2.fromOffset(0, 4)
+	c.BackgroundColor3 = S[key] and Color3.fromRGB(72, 40, 60) or Color3.fromRGB(42, 42, 46)
+	c.BorderSizePixel = 0
+	c.Parent = f
+	Instance.new("UICorner", c).CornerRadius = UDim.new(1, 0)
+	local dot = Instance.new("Frame")
+	dot.Size = UDim2.fromOffset(8, 8)
+	dot.Position = UDim2.fromOffset(3, 3)
+	dot.BackgroundColor3 = PINK
+	dot.BackgroundTransparency = S[key] and 0 or 1
+	dot.BorderSizePixel = 0
+	dot.Parent = c
+	Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+	local l = Instance.new("TextLabel")
+	l.BackgroundTransparency = 1
+	l.Position = UDim2.fromOffset(22, 0)
+	l.Size = UDim2.new(1, -22, 1, 0)
+	l.Font = Enum.Font.Gotham
+	l.TextSize = 13
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.TextColor3 = TEXT
+	l.Text = text
+	l.Parent = f
+	local function paint()
+		tw(dot, 0.16, {BackgroundTransparency = S[key] and 0 or 1})
+		tw(c, 0.16, {BackgroundColor3 = S[key] and Color3.fromRGB(72, 40, 60) or Color3.fromRGB(42, 42, 46)})
+	end
+	painters[key] = paint
+	f.MouseButton1Click:Connect(function() S[key] = not S[key] paint() end)
+end
+local function dropdown(parent, label, key, options)
+	local wrap = Instance.new("Frame")
+	wrap.Size = UDim2.new(1, -6, 0, 40)
+	wrap.BackgroundTransparency = 1
+	wrap.Parent = parent
+	local l = Instance.new("TextLabel")
+	l.BackgroundTransparency = 1
+	l.Size = UDim2.new(1, 0, 0, 14)
+	l.Font = Enum.Font.Gotham
+	l.TextSize = 12
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.TextColor3 = DIM
+	l.Text = label
+	l.Parent = wrap
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(1, 0, 0, 22)
+	b.Position = UDim2.fromOffset(0, 16)
+	b.BackgroundColor3 = Color3.fromRGB(32, 32, 36)
+	b.Font = Enum.Font.Gotham
+	b.TextSize = 13
+	b.TextColor3 = TEXT
+	b.TextXAlignment = Enum.TextXAlignment.Left
+	b.Text = "  " .. tostring(S[key])
+	b.AutoButtonColor = false
+	b.Parent = wrap
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 4)
+	local function paint() b.Text = "  " .. tostring(S[key]) end
+	painters[key] = paint
+	b.MouseButton1Click:Connect(function()
+		local i = table.find(options, S[key]) or 1
+		S[key] = options[i % #options + 1]
+		paint()
+	end)
+end
+local function slider(parent, label, key, min, max, decimals)
+	local wrap = Instance.new("Frame")
+	wrap.Size = UDim2.new(1, -6, 0, 36)
+	wrap.BackgroundTransparency = 1
+	wrap.Parent = parent
+	local l = Instance.new("TextLabel")
+	l.BackgroundTransparency = 1
+	l.Size = UDim2.new(0.55, 0, 0, 14)
+	l.Font = Enum.Font.Gotham
+	l.TextSize = 12
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.TextColor3 = DIM
+	l.Text = label
+	l.Parent = wrap
+	local v = Instance.new("TextLabel")
+	v.BackgroundTransparency = 1
+	v.Size = UDim2.new(0.45, 0, 0, 14)
+	v.Position = UDim2.new(0.55, 0, 0, 0)
+	v.Font = Enum.Font.Gotham
+	v.TextSize = 12
+	v.TextXAlignment = Enum.TextXAlignment.Right
+	v.TextColor3 = PINK
+	v.Parent = wrap
+	local bar = Instance.new("TextButton")
+	bar.Size = UDim2.new(1, 0, 0, 5)
+	bar.Position = UDim2.fromOffset(0, 22)
+	bar.BackgroundColor3 = Color3.fromRGB(48, 48, 54)
+	bar.Text = ""
+	bar.AutoButtonColor = false
+	bar.Parent = wrap
+	Instance.new("UICorner", bar).CornerRadius = UDim.new(1, 0)
+	local fl = Instance.new("Frame")
+	fl.BackgroundColor3 = PINK
+	fl.BorderSizePixel = 0
+	fl.Size = UDim2.fromScale(math.clamp((S[key] - min) / (max - min), 0, 1), 1)
+	fl.Parent = bar
+	Instance.new("UICorner", fl).CornerRadius = UDim.new(1, 0)
+	local step = decimals == 0 and 1 or 0.1
+	local function paint()
+		fl.Size = UDim2.fromScale(math.clamp((S[key] - min) / (max - min), 0, 1), 1)
+		v.Text = string.format("%." .. decimals .. "f / %." .. decimals .. "f", S[key], max)
+	end
+	paint()
+	painters[key] = paint
+	local function setX(x)
+		local rel = math.clamp((x - bar.AbsolutePosition.X) / math.max(bar.AbsoluteSize.X, 1), 0, 1)
+		S[key] = math.clamp(math.floor((min + (max - min) * rel) / step + 0.5) * step, min, max)
+		paint()
+	end
+	bar.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 then activeSlider = setX setX(i.Position.X) end
+	end)
+end
+local function btn(parent, text, fn)
+	local b = Instance.new("TextButton")
+	b.Size = UDim2.new(1, -6, 0, 26)
+	b.BackgroundColor3 = Color3.fromRGB(36, 36, 40)
+	b.Font = Enum.Font.Gotham
+	b.TextSize = 13
+	b.TextColor3 = TEXT
+	b.Text = text
+	b.AutoButtonColor = false
+	b.Parent = parent
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 5)
+	b.MouseButton1Click:Connect(fn)
+	return b
+end
+
+local aim = makePage("Aiming")
+header(aim, "Aimbot")
+toggle(aim, "Enabled", "AimEnabled")
+local chip = Instance.new("TextLabel")
+chip.BackgroundColor3 = Color3.fromRGB(40, 40, 44)
+chip.Size = UDim2.fromOffset(112, 18)
+chip.Position = UDim2.new(1, -124, 0, 22)
+chip.Font = Enum.Font.Gotham
+chip.TextSize = 12
+chip.TextColor3 = TEXT
+chip.Text = "MouseButton1"
+chip.Parent = aim
+Instance.new("UICorner", chip).CornerRadius = UDim.new(0, 4)
+slider(aim, "Mouse Lock", "LockPower", 1, 100, 0)
+toggle(aim, "Team Check", "TeamCheck")
+toggle(aim, "Health Check", "HealthCheck")
+dropdown(aim, "Hit Part", "HitPart", {"Head", "Body", "Closest"})
+dropdown(aim, "Aim Type", "AimType", {"Memory", "Camera"})
+slider(aim, "Distance", "Distance", 50, 2000, 0)
+header(aim, "Prediction")
+toggle(aim, "Aimbot Prediction", "AimPred")
+slider(aim, "Aim Prediction X", "PredX", 0, 20, 2)
+slider(aim, "Aim Prediction Y", "PredY", 0, 20, 2)
+toggle(aim, "Silent Prediction", "SilentPred")
+slider(aim, "Silent Prediction X", "SilentPredX", 0, 20, 2)
+slider(aim, "Silent Prediction Y", "SilentPredY", 0, 20, 2)
+header(aim, "Aimbot FOV")
+toggle(aim, "Enabled", "AimFovOn")
+toggle(aim, "Filled", "AimFovFill")
+slider(aim, "Size", "AimFovSize", 10, 500, 0)
+dropdown(aim, "Style", "AimFovStyle", {"Smooth", "Sharp"})
+header(aim, "Hitbox")
+toggle(aim, "Hitbox Expander", "Hitbox")
+slider(aim, "Upper Torso", "HitboxSize", 2, 20, 1)
+slider(aim, "Expander FOV", "HitboxFov", 6, 80, 0)
+header(aim, "Silent Aim")
+toggle(aim, "Enabled", "SilentOn")
+toggle(aim, "Health Check", "SilentHealth")
+toggle(aim, "Knock Check", "SilentKnock")
+dropdown(aim, "Hit Part", "SilentPart", {"Body", "Head", "Closest"})
+slider(aim, "Distance", "SilentDist", 50, 2000, 0)
+header(aim, "Silent FOV")
+toggle(aim, "Enabled", "SilentFovOn")
+toggle(aim, "Filled", "SilentFovFill")
+slider(aim, "Size", "SilentFovSize", 10, 500, 0)
+dropdown(aim, "Style", "SilentFovStyle", {"Smooth", "Sharp"})
+header(aim, "Smoothness")
+toggle(aim, "Enabled", "SmoothOn")
+slider(aim, "Smoothness X", "SmoothX", 1, 100, 2)
+slider(aim, "Smoothness Y", "SmoothY", 1, 100, 2)
+slider(aim, "Sensitivity", "Sensitivity", 0.1, 2, 2)
+header(aim, "Miscellaneous")
+toggle(aim, "Teleportation Method", "TpMethod")
+dropdown(aim, "Type", "TpType", {"Camera", "Mouse"})
+local vis = makePage("Visuals")
+header(vis, "ESP")
+toggle(vis, "Boxes", "BoxESP")
+toggle(vis, "Names", "NameESP")
+toggle(vis, "Health", "HealthESP")
+toggle(vis, "Tracers", "TracerESP")
+toggle(vis, "Chams", "ChamESP")
+local misc = makePage("Misc")
+header(misc, "Movement")
+toggle(misc, "Speed", "Speed")
+slider(misc, "WalkSpeed", "Walk", 16, 80, 0)
+toggle(misc, "Fly", "Fly")
+toggle(misc, "Noclip", "Noclip")
+toggle(misc, "Infinite Jump", "InfJump")
+local cfg = makePage("Config")
+header(cfg, "PexorHub configs only")
+local nameBox = Instance.new("TextBox")
+nameBox.Size = UDim2.new(1, -6, 0, 28)
+nameBox.BackgroundColor3 = Color3.fromRGB(32, 32, 36)
+nameBox.TextColor3 = TEXT
+nameBox.PlaceholderText = "config name"
+nameBox.Text = "main"
+nameBox.Font = Enum.Font.Gotham
+nameBox.TextSize = 13
+nameBox.ClearTextOnFocus = false
+nameBox.Parent = cfg
+Instance.new("UICorner", nameBox).CornerRadius = UDim.new(0, 5)
+btn(cfg, "Save", function() nameBox.Text = saveConfig(nameBox.Text) end)
+btn(cfg, "Load", function() pcall(function() loadConfig((nameBox.Text or "main"):gsub("[^%w_%-]", "")) end) end)
+btn(cfg, "Delete", function()
+	local n = (nameBox.Text or ""):gsub("[^%w_%-]", "")
+	if n ~= "" and delfile then pcall(delfile, FOLDER .. "/" .. n .. ".json") log("deleted " .. n) end
+end)
+btn(cfg, "Open Folder", openFolder)
+cfgLabel = Instance.new("TextLabel")
+cfgLabel.BackgroundTransparency = 1
+cfgLabel.Size = UDim2.new(1, -6, 0, 160)
+cfgLabel.Font = Enum.Font.Gotham
+cfgLabel.TextSize = 12
+cfgLabel.TextXAlignment = Enum.TextXAlignment.Left
+cfgLabel.TextYAlignment = Enum.TextYAlignment.Top
+cfgLabel.TextColor3 = DIM
+cfgLabel.TextWrapped = true
+cfgLabel.Parent = cfg
+local function refreshCfgText()
+	local names = configList()
+	cfgLabel.Text = #names > 0 and ("Saved:\n" .. table.concat(names, "\n")) or "No PexorHub configs yet"
+end
+btn(cfg, "Refresh List", refreshCfgText)
+local out = makePage("Output")
+outLabel = Instance.new("TextLabel")
+outLabel.BackgroundTransparency = 1
+outLabel.Size = UDim2.new(1, -6, 0, 700)
+outLabel.Font = Enum.Font.Code
+outLabel.TextSize = 12
+outLabel.TextXAlignment = Enum.TextXAlignment.Left
+outLabel.TextYAlignment = Enum.TextYAlignment.Top
+outLabel.TextColor3 = Color3.fromRGB(190, 190, 190)
+outLabel.Parent = out
+local opt = makePage("Options")
+header(opt, "Menu")
+local mk = Instance.new("TextLabel")
+mk.BackgroundTransparency = 1
+mk.Size = UDim2.new(1, 0, 0, 20)
+mk.Font = Enum.Font.Gotham
+mk.TextSize = 13
+mk.TextXAlignment = Enum.TextXAlignment.Left
+mk.TextColor3 = TEXT
+mk.Text = "Hide key: Insert"
+mk.Parent = opt
+local unload = btn(opt, "Unload", function() end)
+local sv = makePage("Viewer")
+local svt = Instance.new("TextLabel")
+svt.BackgroundTransparency = 1
+svt.Size = UDim2.new(1, 0, 0, 40)
+svt.Font = Enum.Font.Code
+svt.TextSize = 13
+svt.TextXAlignment = Enum.TextXAlignment.Left
+svt.TextYAlignment = Enum.TextYAlignment.Top
+svt.TextColor3 = DIM
+svt.Text = "No external script loaded."
+svt.Parent = sv
+local plPage = makePage("Players")
+local function refreshPlayers()
+	for _, c in ipairs(plPage:GetChildren()) do if c:IsA("TextButton") then c:Destroy() end end
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LP then
+			local b = Instance.new("TextButton")
+			b.Size = UDim2.new(1, -6, 0, 24)
+			b.BackgroundColor3 = Whitelist[plr.Name] and Color3.fromRGB(60, 35, 50) or Color3.fromRGB(32, 32, 36)
+			b.Font = Enum.Font.Gotham
+			b.TextSize = 13
+			b.TextColor3 = TEXT
+			b.Text = (Whitelist[plr.Name] and "skip  " or "") .. plr.Name
+			b.Parent = plPage
+			Instance.new("UICorner", b).CornerRadius = UDim.new(0, 4)
+			b.MouseButton1Click:Connect(function()
+				Whitelist[plr.Name] = not Whitelist[plr.Name] or nil
+				refreshPlayers()
+			end)
+		end
+	end
+end
+pageFrames.Aiming.Visible = true
+tabBtns.Aiming.TextColor3 = TEXT
+refreshCfgText()
+
+UIS.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then activeSlider = nil end end)
+UIS.InputChanged:Connect(function(i)
+	if activeSlider and i.UserInputType == Enum.UserInputType.MouseMovement then activeSlider(i.Position.X) end
+end)
+local dragging, ds, sp
+title.InputBegan:Connect(function(i)
+	if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging, ds, sp = true, i.Position, win.Position end
+end)
+UIS.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end end)
+UIS.InputChanged:Connect(function(i)
+	if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
+		local d = i.Position - ds
+		win.Position = UDim2.new(sp.X.Scale, sp.X.Offset + d.X, sp.Y.Scale, sp.Y.Offset + d.Y)
+	end
+end)
+local function overMenu()
+	if not menuOpen then return false end
+	local m = UIS:GetMouseLocation()
+	local p, z = win.AbsolutePosition, win.AbsoluteSize
+	return m.X >= p.X and m.X <= p.X + z.X and m.Y >= p.Y and m.Y <= p.Y + z.Y
+end
+local function setMenu(on)
+	menuOpen = on
+	if on then win.Visible = true tw(win, 0.28, {GroupTransparency = 0})
+	else tw(win, 0.22, {GroupTransparency = 1}) task.delay(0.22, function() if not menuOpen then win.Visible = false end end) end
+end
+UIS.InputBegan:Connect(function(input, processed)
+	if not processed and input.KeyCode == Enum.KeyCode.Insert then setMenu(not menuOpen)
+	elseif S.InfJump and input.KeyCode == Enum.KeyCode.Space and LP.Character then
+		local h = LP.Character:FindFirstChildOfClass("Humanoid")
+		if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+	end
+end)
+
+local function alive(plr)
+	local c = plr.Character
+	local h = c and c:FindFirstChildOfClass("Humanoid")
+	return c and h and h.Health > 0
+end
+local function partOf(plr, mode)
+	local c = plr.Character
+	if mode == "Head" then return c:FindFirstChild("Head") or c:FindFirstChild("HumanoidRootPart") end
+	if mode == "Body" then return c:FindFirstChild("UpperTorso") or c:FindFirstChild("Torso") or c:FindFirstChild("HumanoidRootPart") end
+	return c:FindFirstChild("Head") or c:FindFirstChild("HumanoidRootPart")
+end
+local function skipped(plr, healthOn, knockOn)
+	if Whitelist[plr.Name] then return true end
+	if S.TeamCheck and plr.Team and LP.Team and plr.Team == LP.Team then return true end
+	local h = plr.Character:FindFirstChildOfClass("Humanoid")
+	if healthOn and h.Health < 15 then return true end
+	if knockOn then
+		local be = plr.Character:FindFirstChild("BodyEffects")
+		local ko = be and be:FindFirstChild("K.O")
+		if ko and ko.Value then return true end
+	end
+	return false
+end
+local function see(char, part)
+	params.FilterDescendantsInstances = {LP.Character, char}
+	local hit = workspace:Raycast(Camera.CFrame.Position, part.Position - Camera.CFrame.Position, params)
+	return hit == nil or hit.Instance:IsDescendantOf(char)
+end
+local function predict(part, use, x, y)
+	if not use then return part.Position end
+	local vel = part.AssemblyLinearVelocity
+	return part.Position + Vector3.new(vel.X * (x / 10), vel.Y * (y / 10), vel.Z * (x / 10))
+end
+local function pick(maxDist, fovOn, fov, partMode, healthOn, knockOn, pred, px, py)
+	local mouse = UIS:GetMouseLocation()
+	local bestPos, score = nil, fovOn and fov or 1e9
+	local origin = Camera.CFrame.Position
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LP and alive(plr) and not skipped(plr, healthOn, knockOn) then
+			local part = partOf(plr, partMode)
+			if part and (part.Position - origin).Magnitude <= maxDist then
+				local world = predict(part, pred, px, py)
+				local v, on = Camera:WorldToViewportPoint(world)
+				if on and v.Z > 0 then
+					local d = (Vector2.new(v.X, v.Y) - mouse).Magnitude
+					if d < score and see(plr.Character, part) then score, bestPos = d, world end
+				end
+			end
+		end
+	end
+	return bestPos
+end
+local function moveMouse(world)
+	local viewport = Camera.ViewportSize
+	local screen = Camera:WorldToViewportPoint(world)
+	local cur = UIS:GetMouseLocation()
+	local dx = math.clamp(screen.X, 8, viewport.X - 8) - cur.X
+	local dy = math.clamp(screen.Y, 8, viewport.Y - 8) - cur.Y
+	local power = math.clamp((S.LockPower or 1) / 100, 0.04, 1)
+	local cap = 5 + power * 52
+	dx = math.clamp(dx * power * S.Sensitivity, -cap, cap)
+	dy = math.clamp(dy * power * S.Sensitivity, -cap, cap)
+	if math.abs(dx) < 0.8 then dx = 0 end
+	if math.abs(dy) < 0.8 then dy = 0 end
+	if mousemoverel and (dx ~= 0 or dy ~= 0) then mousemoverel(dx, dy) end
+end
+local function inRing(part)
+	local root = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+	if not root then return false end
+	local d = root.Position - part.Position
+	return Vector3.new(d.X, 0, d.Z).Magnitude <= S.HitboxFov
+end
+local function restoreTorsos()
+	for part, size in pairs(savedTorso) do
+		if part.Parent then part.Size = size part.Transparency = 0 end
+		savedTorso[part] = nil
+	end
+end
+local function updateHitboxes()
+	placeRing()
+	if not S.Hitbox then
+		if next(savedTorso) then restoreTorsos() end
+		return
+	end
+	local want = Vector3.new(S.HitboxSize, S.HitboxSize, S.HitboxSize)
+	local seen = {}
+	for _, plr in ipairs(Players:GetPlayers()) do
+		local c = plr ~= LP and plr.Character
+		local ut = c and c:FindFirstChild("UpperTorso")
+		if ut and ut:IsA("BasePart") and not Whitelist[plr.Name] and inRing(ut) then
+			seen[ut] = true
+			if not savedTorso[ut] then savedTorso[ut] = ut.Size end
+			if ut.Size ~= want then
+				ut.Size = want
+				ut.CanCollide = false
+				ut.Transparency = 0.45
+			end
+		end
+	end
+	for part, size in pairs(savedTorso) do
+		if not seen[part] then
+			if part.Parent then part.Size = size part.Transparency = 0 end
+			savedTorso[part] = nil
+		end
+	end
+end
+
+pcall(function()
+	local mt = getrawmetatable(game)
+	local old = mt.__index
+	setreadonly(mt, false)
+	mt.__index = newcclosure(function(self, k)
+		if S.SilentOn and silentPos and not checkcaller() and k == "Hit" and self == LP:GetMouse() then
+			return CFrame.new(silentPos)
+		end
+		return old(self, k)
+	end)
+	setreadonly(mt, true)
+end)
+
+local aimFov, silentFov, pool = nil, nil, {}
+if Drawing then
+	aimFov, silentFov = Drawing.new("Circle"), Drawing.new("Circle")
+	aimFov.NumSides, silentFov.NumSides = 48, 48
+	aimFov.Color, silentFov.Color = PINK, PINK
+	aimFov.Thickness, silentFov.Thickness = 1, 1
+end
+local function slot(plr)
+	local d = pool[plr]
+	if d or not Drawing then return d end
+	d = {box = Drawing.new("Square"), text = Drawing.new("Text"), line = Drawing.new("Line")}
+	d.box.Thickness, d.box.Filled, d.box.Color = 1, false, PINK
+	d.text.Size, d.text.Center, d.text.Outline, d.text.Color = 13, true, true, Color3.new(1, 1, 1)
+	d.line.Thickness, d.line.Color = 1, PINK
+	pool[plr] = d
+	return d
+end
+local function setCham(plr, on)
+	local c = plr.Character
+	if not c then return end
+	local hl = c:FindFirstChild("PexorCham")
+	if on then
+		if not hl then
+			hl = Instance.new("Highlight")
+			hl.Name = "PexorCham"
+			hl.FillColor = PINK
+			hl.FillTransparency = 0.65
+			hl.Parent = c
+		end
+		hl.Enabled = true
+	elseif hl then hl.Enabled = false end
+end
+Players.PlayerRemoving:Connect(function(plr)
+	local d = pool[plr]
+	if d then pcall(function() d.box:Remove() d.text:Remove() d.line:Remove() end) pool[plr] = nil end
+	refreshPlayers()
+end)
+Players.PlayerAdded:Connect(refreshPlayers)
+refreshPlayers()
+unload.MouseButton1Click:Connect(function()
+	restoreTorsos()
+	ringFolder:Destroy()
+	for _, d in pairs(pool) do pcall(function() d.box:Remove() d.text:Remove() d.line:Remove() end) end
+	if aimFov then aimFov:Remove() silentFov:Remove() end
+	gui:Destroy()
+end)
+
+local espOn = false
+RunService.Heartbeat:Connect(function()
+	Camera = workspace.CurrentCamera
+	updateHitboxes()
+	local needAim = S.AimEnabled or S.SilentOn
+	local needEsp = S.BoxESP or S.NameESP or S.HealthESP or S.TracerESP or S.ChamESP
+	if not needAim and not needEsp and not S.Speed and not S.Fly and not S.Noclip then
+		if aimFov then aimFov.Visible, silentFov.Visible = false, false end
+		return
+	end
+	silentPos = S.SilentOn and pick(S.SilentDist, S.SilentFovOn, S.SilentFovSize, S.SilentPart, S.SilentHealth, S.SilentKnock, S.SilentPred, S.SilentPredX, S.SilentPredY) or nil
+	if S.AimEnabled and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) and not overMenu() then
+		local pos = pick(S.Distance, S.AimFovOn, S.AimFovSize, S.HitPart, S.HealthCheck, false, S.AimPred, S.PredX, S.PredY)
+		if pos then
+			if S.AimType == "Camera" then
+				Camera.CFrame = Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position, pos), math.clamp((S.LockPower or 1) / 100, 0.05, 1))
+			else
+				moveMouse(pos)
+			end
+		end
+	end
+	local char, hum = LP.Character, LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+	if hum then
+		if S.Speed and hum.WalkSpeed ~= S.Walk then hum.WalkSpeed = S.Walk end
+		if S.Fly then
+			local root = char:FindFirstChild("HumanoidRootPart")
+			if root then
+				local mv = Vector3.zero
+				if UIS:IsKeyDown(Enum.KeyCode.W) then mv += Camera.CFrame.LookVector end
+				if UIS:IsKeyDown(Enum.KeyCode.S) then mv -= Camera.CFrame.LookVector end
+				root.AssemblyLinearVelocity = mv.Magnitude > 0 and mv.Unit * 55 or Vector3.zero
+			end
+		end
+		if S.Noclip then
+			for _, p in ipairs(char:GetChildren()) do
+				if p:IsA("BasePart") and p.CanCollide then p.CanCollide = false end
+			end
+		end
+	end
+	if aimFov then
+		local mouse = UIS:GetMouseLocation()
+		aimFov.Position, aimFov.Radius, aimFov.Visible, aimFov.Filled = mouse, S.AimFovSize, S.AimFovOn, S.AimFovFill
+		silentFov.Position, silentFov.Radius, silentFov.Visible, silentFov.Filled = mouse, S.SilentFovSize, S.SilentFovOn, S.SilentFovFill
+	end
+	if not needEsp then
+		if espOn then
+			for plr, d in pairs(pool) do
+				d.box.Visible, d.text.Visible, d.line.Visible = false, false, false
+				setCham(plr, false)
+			end
+			espOn = false
+		end
+		return
+	end
+	espOn = true
+	local bottom = Vector2.new(Camera.ViewportSize.X * 0.5, Camera.ViewportSize.Y)
+	for _, plr in ipairs(Players:GetPlayers()) do
+		local d = slot(plr)
+		if plr ~= LP and d and alive(plr) then
+			local root = plr.Character:FindFirstChild("HumanoidRootPart") or plr.Character:FindFirstChild("Head")
+			local head = plr.Character:FindFirstChild("Head") or root
+			local top = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 1.1, 0))
+			local bot = Camera:WorldToViewportPoint(root.Position - Vector3.new(0, 2.8, 0))
+			local on = top.Z > 0
+			local h, w = math.abs(bot.Y - top.Y), math.abs(bot.Y - top.Y) * 0.55
+			d.box.Visible = on and S.BoxESP
+			if d.box.Visible then
+				d.box.Size = Vector2.new(w, h)
+				d.box.Position = Vector2.new(top.X - w * 0.5, top.Y)
+			end
+			d.text.Visible = on and (S.NameESP or S.HealthESP)
+			if d.text.Visible then
+				local bits = {}
+				if S.NameESP then bits[#bits + 1] = plr.Name end
+				if S.HealthESP then
+					local hh = plr.Character:FindFirstChildOfClass("Humanoid")
+					if hh then bits[#bits + 1] = tostring(math.floor(hh.Health)) end
+				end
+				d.text.Text = table.concat(bits, " ")
+				d.text.Position = Vector2.new(top.X, top.Y - 14)
+			end
+			d.line.Visible = on and S.TracerESP
+			if d.line.Visible then d.line.From, d.line.To = bottom, Vector2.new(top.X, bot.Y) end
+			if S.ChamESP then setCham(plr, true) end
+		elseif d then
+			d.box.Visible, d.text.Visible, d.line.Visible = false, false, false
+		end
+	end
+end)
+log("ready")
